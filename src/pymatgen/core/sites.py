@@ -370,11 +370,65 @@ class PeriodicSite(Site, MSONable):
                 raise ValueError("Species occupancies sum to more than 1!")
 
         self._lattice: Lattice = lattice
-        self._frac_coords: NDArray[np.float64] = np.asarray(frac_coords, dtype=np.float64)
+        # np.array (not asarray) so standalone sites always OWN their backing
+        # storage. Sites that are attached to an IStructure get their _frac_coords
+        # / _coords swapped out for row-views by _bind_to_parent().
+        self._frac_coords: NDArray[np.float64] = np.array(frac_coords, dtype=np.float64)
         self._species: Composition = cast("Composition", species)
         self._coords: NDArray[np.float64] | None = None
         self.properties: dict = properties or {}
         self._label = label
+
+    @classmethod
+    def _from_parent_views(
+        cls,
+        species: SpeciesLike | CompositionLike,
+        frac_view: NDArray[np.float64],
+        cart_view: NDArray[np.float64],
+        lattice: Lattice,
+        properties: dict | None = None,
+        label: str | None = None,
+    ) -> Self:
+        """Fast path used by ``IStructure.__init__`` / mutators to create a site
+        whose ``_frac_coords`` and ``_coords`` *are* row-views into the parent
+        structure's contiguous coord arrays.
+
+        This is internal API. No conversion, no validation — the caller must
+        guarantee ``frac_view`` and ``cart_view`` are shape ``(3,)`` float64
+        views (typically ``parent._frac_coords[i]`` and ``parent._cart_coords[i]``)
+        and that ``cart_view`` already holds the Cartesian image of ``frac_view``.
+        """
+        self = cls.__new__(cls)
+        self._lattice = lattice
+        self._frac_coords = frac_view
+        self._coords = cart_view
+        if not isinstance(species, Composition):
+            try:
+                species = Composition({get_el_sp(species): 1})  # type: ignore[arg-type]
+            except TypeError:
+                species = Composition(species)
+        self._species = cast("Composition", species)
+        self.properties = properties or {}
+        self._label = label
+        return self
+
+    def _bind_to_parent(
+        self,
+        frac_view: NDArray[np.float64],
+        cart_view: NDArray[np.float64],
+    ) -> None:
+        """Re-point this site's _frac_coords / _coords at the given row views.
+
+        Used by ``IStructure._rebuild_coord_arrays`` after a structural mutation
+        that re-allocates the parent's contiguous coord buffers.
+        """
+        frac_view[:] = self._frac_coords
+        if self._coords is None:
+            cart_view[:] = self._lattice.get_cartesian_coords(self._frac_coords)
+        else:
+            cart_view[:] = self._coords
+        self._frac_coords = frac_view
+        self._coords = cart_view
 
     def __hash__(self) -> int:
         """Minimally effective hash function that just distinguishes between Sites
@@ -411,33 +465,73 @@ class PeriodicSite(Site, MSONable):
 
     @lattice.setter
     def lattice(self, lattice: Lattice) -> None:
-        """Set Lattice associated with PeriodicSite."""
+        """Set Lattice associated with PeriodicSite.
+
+        Fractional coords are preserved; Cartesian coords are recomputed and
+        written through any backing storage (so when the site is a view into a
+        parent ``IStructure._cart_coords`` array, the parent stays in sync).
+        """
         self._lattice = lattice
-        self._coords = self._lattice.get_cartesian_coords(self._frac_coords)
+        new_cart = self._lattice.get_cartesian_coords(self._frac_coords)
+        if self._coords is None:
+            self._coords = np.ascontiguousarray(new_cart, dtype=np.float64)
+        else:
+            self._coords[:] = new_cart
 
     @property
     def coords(self) -> NDArray[np.float64]:
-        """Cartesian coordinates."""
+        """Cartesian coordinates.
+
+        Returns a copy so callers can safely cache the result (e.g.
+        ``initial = site.coords; ... ; site.lattice = ...; initial`` keeps the
+        pre-mutation snapshot). Under the hood ``self._coords`` is typically a
+        view into the parent ``IStructure._cart_coords`` array; returning the
+        live view would mean any subsequent structure-level mutation silently
+        rewrites already-handed-out references.
+        """
         if self._coords is None:
-            self._coords = self._lattice.get_cartesian_coords(self._frac_coords)
-        return self._coords
+            self._coords = np.ascontiguousarray(self._lattice.get_cartesian_coords(self._frac_coords), dtype=np.float64)
+        return self._coords.copy()
 
     @coords.setter
     def coords(self, coords: ArrayLike) -> None:
-        """Set Cartesian coordinates."""
-        self._coords = np.asarray(coords, dtype=np.float64)
-        self._frac_coords = self._lattice.get_fractional_coords(self._coords)
+        """Set Cartesian coordinates (write-through).
+
+        If ``self._coords`` / ``self._frac_coords`` are views into a parent
+        ``IStructure`` coord array, this writes through to update the parent.
+        """
+        new_cart = np.asarray(coords, dtype=np.float64)
+        if self._coords is None:
+            self._coords = np.ascontiguousarray(new_cart, dtype=np.float64)
+        else:
+            self._coords[:] = new_cart
+        new_frac = self._lattice.get_fractional_coords(self._coords)
+        self._frac_coords[:] = new_frac
 
     @property
     def frac_coords(self) -> NDArray[np.float64]:
-        """Fractional coordinates."""
-        return self._frac_coords
+        """Fractional coordinates.
+
+        Returns a copy for the same reason as :attr:`coords` (the backing
+        ``self._frac_coords`` is normally a view into the parent
+        ``IStructure._frac_coords`` array).
+        """
+        return self._frac_coords.copy()
 
     @frac_coords.setter
     def frac_coords(self, frac_coords: ArrayLike) -> None:
-        """Set fractional coordinates."""
-        self._frac_coords = np.array(frac_coords, dtype=np.float64)
-        self._coords = self._lattice.get_cartesian_coords(self._frac_coords)
+        """Set fractional coordinates (write-through).
+
+        Writes through any backing view so a parent ``IStructure._frac_coords``
+        row remains the source of truth.
+        """
+        new_frac = np.asarray(frac_coords, dtype=np.float64)
+        self._frac_coords[:] = new_frac
+        new_cart = self._lattice.get_cartesian_coords(self._frac_coords)
+        if self._coords is None:
+            self._coords = np.ascontiguousarray(new_cart, dtype=np.float64)
+        else:
+            self._coords[:] = new_cart
 
     @property
     def a(self) -> float:
@@ -447,7 +541,11 @@ class PeriodicSite(Site, MSONable):
     @a.setter
     def a(self, a: float) -> None:
         self._frac_coords[0] = a
-        self._coords = self._lattice.get_cartesian_coords(self._frac_coords)
+        new_cart = self._lattice.get_cartesian_coords(self._frac_coords)
+        if self._coords is None:
+            self._coords = np.ascontiguousarray(new_cart, dtype=np.float64)
+        else:
+            self._coords[:] = new_cart
 
     @property
     def b(self) -> float:
@@ -457,7 +555,11 @@ class PeriodicSite(Site, MSONable):
     @b.setter
     def b(self, b: float) -> None:
         self._frac_coords[1] = b
-        self._coords = self._lattice.get_cartesian_coords(self._frac_coords)
+        new_cart = self._lattice.get_cartesian_coords(self._frac_coords)
+        if self._coords is None:
+            self._coords = np.ascontiguousarray(new_cart, dtype=np.float64)
+        else:
+            self._coords[:] = new_cart
 
     @property
     def c(self) -> float:
@@ -467,37 +569,46 @@ class PeriodicSite(Site, MSONable):
     @c.setter
     def c(self, c: float) -> None:
         self._frac_coords[2] = c
-        self._coords = self._lattice.get_cartesian_coords(self._frac_coords)
+        new_cart = self._lattice.get_cartesian_coords(self._frac_coords)
+        if self._coords is None:
+            self._coords = np.ascontiguousarray(new_cart, dtype=np.float64)
+        else:
+            self._coords[:] = new_cart
 
     @property
     def x(self) -> float:
         """Cartesian x coordinate."""
-        return self.coords[0]
+        return float(self.coords[0])
 
     @x.setter
     def x(self, x: float) -> None:
-        self.coords[0] = x
-        self._frac_coords = self._lattice.get_fractional_coords(self.coords)
+        # Touch the public getter so self._coords is allocated if it was None,
+        # then mutate the underlying _coords (the getter returns a copy).
+        _ = self.coords
+        self._coords[0] = x  # type: ignore[index]
+        self._frac_coords[:] = self._lattice.get_fractional_coords(self._coords)
 
     @property
     def y(self) -> float:
         """Cartesian y coordinate."""
-        return self.coords[1]
+        return float(self.coords[1])
 
     @y.setter
     def y(self, y: float) -> None:
-        self.coords[1] = y
-        self._frac_coords = self._lattice.get_fractional_coords(self.coords)
+        _ = self.coords
+        self._coords[1] = y  # type: ignore[index]
+        self._frac_coords[:] = self._lattice.get_fractional_coords(self._coords)
 
     @property
     def z(self) -> float:
         """Cartesian z coordinate."""
-        return self.coords[2]
+        return float(self.coords[2])
 
     @z.setter
     def z(self, z: float) -> None:
-        self.coords[2] = z
-        self._frac_coords = self._lattice.get_fractional_coords(self.coords)
+        _ = self.coords
+        self._coords[2] = z  # type: ignore[index]
+        self._frac_coords[:] = self._lattice.get_fractional_coords(self._coords)
 
     def to_unit_cell(self, in_place: bool = False) -> Self | None:
         """Move frac coords to within the unit cell."""

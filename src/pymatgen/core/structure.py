@@ -253,6 +253,16 @@ class SiteCollection(collections.abc.Sequence, ABC):
         # If self is mutable Structure or Molecule, set _sites as list
         is_mutable = isinstance(self._sites, collections.abc.MutableSequence)
         self._sites: list[PeriodicSite] | tuple[PeriodicSite, ...] = list(sites) if is_mutable else tuple(sites)
+        self._on_sites_changed()
+
+    def _on_sites_changed(self) -> None:
+        """Hook invoked by mutators that change ``self._sites`` membership or order.
+
+        ``IStructure`` overrides this to rebuild its contiguous coord arrays and
+        rebind every site's row-views. ``IMolecule`` overrides it to drop its
+        cart coord cache. The base implementation is a no-op so plain
+        ``SiteCollection`` subclasses are unaffected.
+        """
 
     @abstractmethod
     def copy(self) -> Self:
@@ -406,8 +416,27 @@ class SiteCollection(collections.abc.Sequence, ABC):
 
     @property
     def cart_coords(self) -> NDArray[np.float64]:
-        """An np.array of the Cartesian coordinates of sites in the structure."""
-        return np.array([site.coords for site in self])
+        """An np.array of the Cartesian coordinates of sites in the structure.
+
+        For ``IStructure``/``Structure`` this returns a copy of the parent-owned
+        ``self._cart_coords`` array (kept in sync with site coords via row-views).
+        For ``IMolecule``/``Molecule`` ``self._cart_coords`` is ``None`` and we
+        rebuild from sites each call — Site.coords is a plain attribute that
+        callers can rewrite arbitrarily, so we cannot safely cache.
+        Callers may freely mutate the returned array.
+        """
+        cache = getattr(self, "_cart_coords", None)
+        if cache is None:
+            if not self._sites:
+                return np.zeros((0, 3), dtype=np.float64)
+            # Build but do *not* persist — see docstring.
+            return np.array([site.coords for site in self])
+        # IStructure path: verify the cache still corresponds to current sites.
+        align = getattr(self, "_ensure_coord_arrays_aligned", None)
+        if align is not None:
+            align()
+            cache = self._cart_coords
+        return cache.copy()
 
     @property
     def formula(self) -> str:
@@ -1077,7 +1106,40 @@ class IStructure(SiteCollection, MSONable):
 
         self._lattice = lattice if isinstance(lattice, Lattice) else Lattice(lattice)
 
-        sites = []
+        # Source-of-truth contiguous arrays owned by the IStructure. Each
+        # PeriodicSite below holds a row-view (e.g. self._frac_coords[i]) as its
+        # _frac_coords / _coords, so site-level mutations write through to the
+        # parent and structure-level reads of cart_coords / frac_coords just
+        # return a copy of the live array (no per-site iteration, no per-site
+        # lattice matmul).
+        # ``coords`` accepts list / ndarray / Mapping[int, ArrayLike]; we route
+        # through ``coords[i]`` so dict-keyed-by-index inputs (used by some
+        # downstream callers like MoleculeGraph) keep working.
+        n = len(species)
+        if n > 0:
+            coords_arr = np.asarray([coords[i] for i in range(n)], dtype=np.float64)  # type:ignore[index]
+            if coords_arr.ndim == 1:
+                coords_arr = coords_arr.reshape(-1, 3)
+            if coords_arr.shape != (n, 3):
+                raise StructureError(f"coords must be shape ({n}, 3), got {coords_arr.shape}")
+            if coords_are_cartesian:
+                cart_arr = np.array(coords_arr, dtype=np.float64)  # own copy
+                frac_arr = self._lattice.get_fractional_coords(cart_arr)
+            else:
+                frac_arr = np.array(coords_arr, dtype=np.float64)  # own copy
+                cart_arr = self._lattice.get_cartesian_coords(frac_arr)
+            if to_unit_cell:
+                pbc_mask = np.asarray(self._lattice.pbc, dtype=bool)
+                frac_arr = np.where(pbc_mask, np.mod(frac_arr, 1), frac_arr).astype(np.float64, copy=False)
+                cart_arr = self._lattice.get_cartesian_coords(frac_arr)
+            # Ensure C-contiguous so row slices are well-formed views.
+            self._frac_coords: NDArray[np.float64] = np.ascontiguousarray(frac_arr, dtype=np.float64)
+            self._cart_coords: NDArray[np.float64] = np.ascontiguousarray(cart_arr, dtype=np.float64)
+        else:
+            self._frac_coords = np.zeros((0, 3), dtype=np.float64)
+            self._cart_coords = np.zeros((0, 3), dtype=np.float64)
+
+        sites: list[PeriodicSite] = []
         for idx, specie in enumerate(species):
             prop = None
             if site_properties:
@@ -1085,12 +1147,11 @@ class IStructure(SiteCollection, MSONable):
 
             label = labels[idx] if labels else None
 
-            site = PeriodicSite(
+            site = PeriodicSite._from_parent_views(
                 specie,
-                np.array(coords[idx]),
+                self._frac_coords[idx],
+                self._cart_coords[idx],
                 self._lattice,
-                to_unit_cell,
-                coords_are_cartesian=coords_are_cartesian,
                 properties=prop,
                 label=label,
             )
@@ -1100,6 +1161,40 @@ class IStructure(SiteCollection, MSONable):
             raise StructureError(f"sites are less than {self.DISTANCE_TOLERANCE} Angstrom apart!")
         self._charge = charge
         self._properties = properties or {}
+
+    def _on_sites_changed(self) -> None:
+        """Rebuild parent coord arrays after self._sites was resized/reordered."""
+        self._rebuild_coord_arrays()
+
+    def _rebuild_coord_arrays(self) -> None:
+        """Rebuild self._frac_coords and self._cart_coords from current self._sites
+        and rebind every site's _frac_coords / _coords to a row-view of the new
+        buffers.
+
+        Called by ``Structure`` mutators that resize or reorder ``self._sites``
+        (``append``, ``insert``, ``__delitem__``, ``remove_sites``, ``sort``,
+        ``merge_sites``, ``substitute``, the ``sites`` setter, ...). Idempotent;
+        cheap relative to the cost of the mutation itself (~one ``np.empty``
+        allocation + one Python-level pass over sites).
+        """
+        n = len(self._sites)
+        if n == 0:
+            self._frac_coords = np.zeros((0, 3), dtype=np.float64)
+            self._cart_coords = np.zeros((0, 3), dtype=np.float64)
+            return
+        new_frac = np.empty((n, 3), dtype=np.float64)
+        new_cart = np.empty((n, 3), dtype=np.float64)
+        for i, site in enumerate(self._sites):
+            new_frac[i] = site._frac_coords
+            if site._coords is not None:
+                new_cart[i] = site._coords
+            else:
+                new_cart[i] = self._lattice.get_cartesian_coords(site._frac_coords)
+        self._frac_coords = new_frac
+        self._cart_coords = new_cart
+        for i, site in enumerate(self._sites):
+            site._frac_coords = new_frac[i]
+            site._coords = new_cart[i]
 
     def __eq__(self, other: object) -> bool:
         """Define equality by comparing all three attributes: lattice, sites, properties."""
@@ -1617,9 +1712,33 @@ class IStructure(SiteCollection, MSONable):
         return matcher.fit(self, other)
 
     @property
-    def frac_coords(self):
-        """Fractional coordinates as a Nx3 numpy array."""
-        return np.array([site.frac_coords for site in self])
+    def frac_coords(self) -> NDArray[np.float64]:
+        """Fractional coordinates as a Nx3 numpy array.
+
+        Backed by ``self._frac_coords``, the parent-owned contiguous array. Each
+        site's ``_frac_coords`` is a row-view into this array, so the cache is
+        always live without explicit invalidation on attribute-level mutations
+        (e.g. ``site.frac_coords = ...``). Mutators that resize or reorder sites
+        (``append``, ``remove_sites``, ``sort``, ...) call
+        ``_rebuild_coord_arrays()`` to rebind site views to the new buffers.
+        Returns a copy so callers can mutate freely.
+        """
+        self._ensure_coord_arrays_aligned()
+        return self._frac_coords.copy()
+
+    def _ensure_coord_arrays_aligned(self) -> None:
+        """Sanity check: are the site row-views still aligned with the parent
+        coord arrays? Cheap (one ``.base`` identity check); only rebuilds when
+        someone bypassed ``_on_sites_changed`` via direct ``self._sites = ...``
+        or ``self._sites[i] = some_new_site`` (rare). Without this guard a
+        rewired structure could silently hand out stale coords.
+        """
+        sites = self._sites
+        if not sites:
+            return
+        first_frac = sites[0]._frac_coords
+        if len(self._frac_coords) != len(sites) or first_frac is None or first_frac.base is not self._frac_coords:
+            self._rebuild_coord_arrays()
 
     @property
     def volume(self) -> float:
@@ -3555,15 +3674,32 @@ class IMolecule(SiteCollection, MSONable):
 
         self._charge_spin_check = charge_spin_check
 
+        # ``coords`` may be a list / ndarray / Mapping[int, ArrayLike] (the dict
+        # form is used by MoleculeGraph.get_disconnected_fragments and similar
+        # consumers that build a dict keyed by node index).
+        n = len(species)
+        if n > 0:
+            coords_arr = np.asarray([coords[i] for i in range(n)], dtype=np.float64)  # type:ignore[index]
+            if coords_arr.ndim == 1:
+                coords_arr = coords_arr.reshape(-1, 3)
+        else:
+            coords_arr = np.zeros((0, 3), dtype=np.float64)
+
         sites: list[Site] = []
-        for idx in range(len(species)):
+        for idx in range(n):
             prop = None
             if site_properties:
                 prop = {k: v[idx] for k, v in site_properties.items()}
             label = labels[idx] if labels else None
-            sites.append(Site(species[idx], coords[idx], properties=prop, label=label))  # type:ignore[index]
+            sites.append(Site(species[idx], coords_arr[idx].copy(), properties=prop, label=label))  # type:ignore[index]
 
         self._sites = tuple(sites)  # type:ignore[arg-type]
+        # Unlike ``IStructure``, ``IMolecule`` does *not* maintain a parent
+        # cart-coord cache: Molecule ``Site`` objects own their own ``coords``
+        # attribute (Site.coords is a plain attribute, not a property with a
+        # setter we can hook). The cart_coords property therefore always
+        # rebuilds from sites — fine because molecules are typically small.
+        self._cart_coords: NDArray[np.float64] | None = None
         if validate_proximity and not self.is_valid():
             raise StructureError("Molecule contains sites that are less than 0.01 Angstrom apart!")
 
@@ -4332,6 +4468,7 @@ class Structure(IStructure, collections.abc.MutableSequence):
         else:
             indices = list(idx)
 
+        replaced_site = False
         for ii in indices:
             if isinstance(site, PeriodicSite):
                 if site.lattice != self._lattice:
@@ -4339,6 +4476,7 @@ class Structure(IStructure, collections.abc.MutableSequence):
                 if len(indices) != 1:
                     raise ValueError("Site assignments makes sense only for single int indices!")
                 self._sites[ii] = site
+                replaced_site = True
 
             elif isinstance(site, str) or (not isinstance(site, collections.abc.Sequence)):
                 self._sites[ii].species = site  # type: ignore[assignment]
@@ -4349,10 +4487,17 @@ class Structure(IStructure, collections.abc.MutableSequence):
                     self._sites[ii].frac_coords = site[1]  # type: ignore[index,assignment]
                 if len(site) > 2:
                     self._sites[ii].properties = site[2]  # type: ignore[assignment, index]
+        # If a PeriodicSite was assigned, its _frac_coords / _coords are its own
+        # owned arrays (not views into our parent buffers). Rebuild + rebind so
+        # the parent cache stays the source of truth. Species-only or frac-via-
+        # setter changes already wrote through the existing views.
+        if replaced_site:
+            self._on_sites_changed()
 
     def __delitem__(self, idx: SupportsIndex | slice) -> None:
         """Delete a site from the Structure."""
         self._sites.__delitem__(idx)
+        self._on_sites_changed()
 
     @property
     def lattice(self) -> Lattice:
@@ -4364,6 +4509,9 @@ class Structure(IStructure, collections.abc.MutableSequence):
         if not isinstance(lattice, Lattice):
             lattice = Lattice(lattice)
         self._lattice = lattice
+        # site.lattice = lattice writes through site._coords[:] which is our
+        # cart row-view -> self._cart_coords is updated in lockstep without
+        # an explicit rebuild.
         for site in self:
             site.lattice = lattice
 
@@ -4433,6 +4581,7 @@ class Structure(IStructure, collections.abc.MutableSequence):
                     raise ValueError("New site is too close to an existing site!")
 
         cast("list[PeriodicSite]", self.sites).insert(idx, new_site)
+        self._on_sites_changed()
 
         return self
 
@@ -4470,6 +4619,7 @@ class Structure(IStructure, collections.abc.MutableSequence):
 
         new_site = PeriodicSite(species, frac_coords, self._lattice, properties=properties, label=label)
         cast("list[PeriodicSite]", self.sites)[idx] = new_site
+        self._on_sites_changed()
 
         return self
 
@@ -4583,6 +4733,7 @@ class Structure(IStructure, collections.abc.MutableSequence):
                 label=site.label,
             )
             self._sites.append(s_new)
+        self._on_sites_changed()
 
         return self
 
@@ -4714,6 +4865,10 @@ class Structure(IStructure, collections.abc.MutableSequence):
             Structure: self sorted.
         """
         self._sites.sort(key=key, reverse=reverse)
+        # sort permutes self._sites in place; site views still point at the same
+        # rows of self._frac_coords / _cart_coords but now in the wrong order
+        # relative to self._sites. Rebuild + rebind to re-align.
+        self._on_sites_changed()
         return self
 
     def translate_sites(
@@ -4955,6 +5110,7 @@ class Structure(IStructure, collections.abc.MutableSequence):
             sites.append(PeriodicSite(species, coords, self.lattice, properties=props))
 
         self._sites = sites
+        self._on_sites_changed()
         return self
 
     def set_charge(self, new_charge: float = 0.0) -> Self:
@@ -5238,10 +5394,12 @@ class Molecule(IMolecule, collections.abc.MutableSequence):
                     self._sites[ii].coords = site[1]  # type: ignore[assignment, index]
                 if len(site) > 2:
                     self._sites[ii].properties = site[2]  # type: ignore[assignment, index]
+        self._on_sites_changed()
 
     def __delitem__(self, idx: SupportsIndex | slice) -> None:
         """Deletes a site from the Structure."""
         self._sites.__delitem__(idx)
+        self._on_sites_changed()
 
     def append(  # type:ignore[override]
         self,
@@ -5338,6 +5496,7 @@ class Molecule(IMolecule, collections.abc.MutableSequence):
                 if site.distance(new_site) < self.DISTANCE_TOLERANCE:  # type:ignore[arg-type]
                     raise ValueError("New site is too close to an existing site!")
         cast("list[PeriodicSite]", self.sites).insert(idx, new_site)  # type:ignore[arg-type]
+        self._on_sites_changed()
 
         return self
 

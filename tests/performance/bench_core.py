@@ -14,7 +14,9 @@ import timeit
 import warnings
 from typing import TYPE_CHECKING
 
-from pymatgen.core import Composition, Element, Species
+import numpy as np
+
+from pymatgen.core import Composition, Element, Lattice, Species, Structure
 from pymatgen.core.periodic_table import get_el_sp
 
 if TYPE_CHECKING:
@@ -134,6 +136,41 @@ def main() -> None:
     print("\n[Species]")
     run("Species('Fe', 2)", lambda: Species("Fe", 2))
     run("Species.from_str('Fe2+')", lambda: Species.from_str("Fe2+"))
+
+    # --- Structure construction + coord access ------------------------------
+    print("\n[Structure] construction and coord access")
+    # A representative ordered crystal: NaCl 4x4x4 supercell (256 sites).
+    rng = np.random.default_rng(0)
+    lattice = Lattice.cubic(5.64)
+    base_species = ["Na", "Cl", "Na", "Cl", "Na", "Cl", "Na", "Cl"]
+    base_frac = [
+        [0.0, 0.0, 0.0],
+        [0.5, 0.5, 0.5],
+        [0.0, 0.5, 0.5],
+        [0.5, 0.0, 0.0],
+        [0.5, 0.0, 0.5],
+        [0.0, 0.5, 0.0],
+        [0.5, 0.5, 0.0],
+        [0.0, 0.0, 0.5],
+    ]
+    nacl = Structure(lattice, base_species, base_frac)
+    big_lattice = Lattice.cubic(5.64 * 4)
+    big_species = base_species * 64
+    big_frac = (np.tile(np.asarray(base_frac), (64, 1)) + rng.uniform(0, 1, (512, 3))) % 1.0
+    big_species = big_species[:512]
+
+    # Cart-coord constructor (forces frac->cart batch conversion).
+    big_cart = big_lattice.get_cartesian_coords(big_frac)
+    run("Structure(NaCl, N=8) from frac", lambda: Structure(lattice, base_species, base_frac))
+    run("Structure(N=512) from frac", lambda: Structure(big_lattice, big_species, big_frac))
+    run("Structure(N=512) from cart", lambda: Structure(big_lattice, big_species, big_cart, coords_are_cartesian=True))
+
+    big = Structure(big_lattice, big_species, big_frac)
+    run("big.cart_coords (50x)", lambda: [big.cart_coords for _ in range(50)])
+    run("big.frac_coords (50x)", lambda: [big.frac_coords for _ in range(50)])
+    run("big.distance_matrix (5x)", lambda: [big.distance_matrix for _ in range(5)])
+    run("big.copy() (5x)", lambda: [big.copy() for _ in range(5)])
+    run("nacl * (2,2,2) supercell (5x)", lambda: [nacl * (2, 2, 2) for _ in range(5)])
 
 
 if __name__ == "__main__":
