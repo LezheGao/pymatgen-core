@@ -30,11 +30,12 @@ from monty.io import zopen
 from monty.json import MSONable
 from numpy.linalg import norm
 from ruamel.yaml import YAML
-from scipy.cluster.hierarchy import fcluster, linkage
-from scipy.linalg import expm, polar
-from scipy.spatial import cKDTree, distance
 from tabulate import tabulate
 
+# scipy.cluster.hierarchy, scipy.linalg, and scipy.spatial are imported
+# lazily inside the few methods that use them (merge_sites,
+# get_primitive_structure, rotate_sites, interpolate). Together they account
+# for ~85 ms of cold `from pymatgen.core import Structure` import time.
 from pymatgen.core.bonds import CovalentBond, get_bond_length
 from pymatgen.core.composition import Composition
 from pymatgen.core.lattice import Lattice, get_points_in_spheres
@@ -42,8 +43,11 @@ from pymatgen.core.operations import SymmOp
 from pymatgen.core.periodic_table import _PT_UNIT, DummySpecies, Element, Species, get_el_sp
 from pymatgen.core.sites import PeriodicSite, Site
 from pymatgen.core.units import Length, Mass
-from pymatgen.electronic_structure.core import Magmom
-from pymatgen.symmetry.maggroups import MagneticSpaceGroup
+
+# Magmom and MagneticSpaceGroup are imported lazily inside
+# IStructure.from_magnetic_spacegroup; they're the only call site and the
+# eager imports drag in pymatgen.electronic_structure.core + symmetry.maggroups
+# + symmetry.groups (~6-10 ms) on every `from pymatgen.core import Structure`.
 from pymatgen.util.coord import all_distances, get_angle, lattice_points_in_supercell
 from pymatgen.util.due import Doi, due
 
@@ -61,6 +65,7 @@ if TYPE_CHECKING:
     from matgl.ext.ase import TrajectoryObserver
     from numpy.typing import ArrayLike, NDArray
 
+    from pymatgen.symmetry.maggroups import MagneticSpaceGroup
     from pymatgen.util.typing import CompositionLike, PathLike, SpeciesLike
 
 FileFormats: TypeAlias = Literal[
@@ -1449,6 +1454,9 @@ class IStructure(SiteCollection, MSONable):
         if "magmom" not in site_properties:
             raise ValueError("Magnetic moments have to be defined.")
 
+        from pymatgen.electronic_structure.core import Magmom
+        from pymatgen.symmetry.maggroups import MagneticSpaceGroup
+
         magmoms = [Magmom(m) for m in site_properties["magmom"]]
 
         if not isinstance(msg, MagneticSpaceGroup):
@@ -2503,6 +2511,8 @@ class IStructure(SiteCollection, MSONable):
         structs = []
 
         if interpolate_lattices:
+            from scipy.linalg import polar
+
             # Interpolate lattice matrices using polar decomposition
             # u is a unitary rotation, p is stretch
             _u, p = polar(np.dot(end_structure.lattice.matrix.T, np.linalg.inv(self.lattice.matrix.T)))
@@ -2623,6 +2633,8 @@ class IStructure(SiteCollection, MSONable):
             Get the fractional coords in fc1 that have coordinates
             within tolerance to some coordinate in fc2.
             """
+            from scipy.spatial import cKDTree
+
             tol = np.asarray(tol, dtype=float)
             scale = 1.0 / tol
             boxsize = scale
@@ -4786,6 +4798,8 @@ class Structure(IStructure, collections.abc.MutableSequence):
         anchor = np.array(anchor)
         axis = np.array(axis)
 
+        from scipy.linalg import expm
+
         theta %= 2 * np.pi
 
         rm = expm(np.cross(np.eye(3), axis / norm(axis)) * theta)
@@ -4916,6 +4930,9 @@ class Structure(IStructure, collections.abc.MutableSequence):
 
         if dist_mat.shape == (1, 1):
             return self
+
+        from scipy.cluster.hierarchy import fcluster, linkage
+        from scipy.spatial import distance
 
         clusters = fcluster(linkage(distance.squareform((dist_mat + dist_mat.T) / 2)), tol, "distance")
 
@@ -5431,6 +5448,8 @@ class Molecule(IMolecule, collections.abc.MutableSequence):
 
         anchor = np.array(anchor)
         axis = np.array(axis)
+
+        from scipy.linalg import expm
 
         theta %= 2 * np.pi
 
