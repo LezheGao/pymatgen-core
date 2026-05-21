@@ -142,14 +142,18 @@ class TestErrorMessages:
 
 class TestFilterKwargs:
     def test_filters_unsupported(self):
-        def f(a, b=1): ...  # signature has only a, b
+        # Signature has only a, b — `bogus` should be dropped with a warning.
+        def f(a, b=1):
+            pass
 
         with pytest.warns(UserWarning, match="bogus"):
             filtered = filter_kwargs(f, {"a": 1, "bogus": 2})
         assert filtered == {"a": 1}
 
     def test_passes_through_with_var_keyword(self):
-        def f(**kwargs): ...
+        # `**kwargs` opt-out: nothing should be filtered or warned about.
+        def f(**kwargs):
+            pass
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
