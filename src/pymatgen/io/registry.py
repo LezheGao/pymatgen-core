@@ -206,7 +206,6 @@ _BUILTIN_STRUCTURE_FILENAME_PRIORITY: tuple[tuple[str, str], ...] = (
     # For `to`: "prismatic" is dispatched by fmt= today and would match here
     # only if a user names their file with "prismatic" in it.
     ("prismatic", "*prismatic*"),
-    ("aims", "geometry.in"),
 )
 
 _BUILTIN_MOLECULE_FILENAME_PRIORITY: tuple[tuple[str, str], ...] = (
