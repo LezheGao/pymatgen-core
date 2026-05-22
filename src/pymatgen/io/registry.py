@@ -418,8 +418,6 @@ def get_structure_format(*, name: str = "", filename: str = "") -> StructureForm
         _ensure_loaded_structure(name)
         if name in _STRUCTURE_REGISTRY:
             return _STRUCTURE_REGISTRY[name]
-        if filename:
-            raise ValueError(f"Invalid fmt={name!r}")
         raise ValueError(f"Invalid fmt={name!r}")
 
     if not filename:
