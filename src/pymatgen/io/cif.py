@@ -1681,7 +1681,7 @@ class CifWriter:
                         clean_sp = Species(sp.symbol, sp.oxi_state)
                     else:
                         clean_sp = get_el_sp(sp.symbol)
-                        atom_site_type_symbol.append(str(clean_sp))
+                    atom_site_type_symbol.append(str(clean_sp))
                     atom_site_symmetry_multiplicity.append("1")
                     atom_site_fract_x.append(format_str.format(site.a))
                     atom_site_fract_y.append(format_str.format(site.b))
@@ -1738,7 +1738,7 @@ class CifWriter:
                         clean_sp = Species(sp.symbol, sp.oxi_state)
                     else:
                         clean_sp = get_el_sp(sp.symbol)
-                        atom_site_type_symbol.append(str(clean_sp))
+                    atom_site_type_symbol.append(str(clean_sp))
                     atom_site_symmetry_multiplicity.append(f"{mult}")
                     atom_site_fract_x.append(format_str.format(site.a))
                     atom_site_fract_y.append(format_str.format(site.b))
