@@ -1677,9 +1677,11 @@ class CifWriter:
         if symprec is None:
             for site in struct:
                 for sp, occu in sorted(site.species.items()):
-                    sp_no_prop = copy.deepcopy(sp)
-                    sp_no_prop._properties = {}
-                    atom_site_type_symbol.append(str(sp_no_prop))
+                    if hasattr(sp, 'oxi_state') and sp.oxi_state is not None:
+                        clean_sp = Species(sp.symbol, sp.oxi_state)
+                    else:
+                        clean_sp = get_el_sp(sp.symbol)
+                        atom_site_type_symbol.append(str(clean_sp))
                     atom_site_symmetry_multiplicity.append("1")
                     atom_site_fract_x.append(format_str.format(site.a))
                     atom_site_fract_y.append(format_str.format(site.b))
@@ -1732,9 +1734,11 @@ class CifWriter:
                 ),
             ):
                 for sp, occu in site.species.items():
-                    sp_no_prop = copy.deepcopy(sp)
-                    sp_no_prop._properties = {}
-                    atom_site_type_symbol.append(str(sp_no_prop))
+                    if hasattr(sp, 'oxi_state') and sp.oxi_state is not None:
+                        clean_sp = Species(sp.symbol, sp.oxi_state)
+                    else:
+                        clean_sp = get_el_sp(sp.symbol)
+                        atom_site_type_symbol.append(str(clean_sp))
                     atom_site_symmetry_multiplicity.append(f"{mult}")
                     atom_site_fract_x.append(format_str.format(site.a))
                     atom_site_fract_y.append(format_str.format(site.b))
