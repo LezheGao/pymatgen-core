@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import math
 import re
 import textwrap
@@ -1596,6 +1595,11 @@ class CifWriter:
             write_site_properties (bool): Whether to write the Structure.site_properties
                 to the CIF as _atom_site_{property name}. Defaults to False.
         """
+        def _clean_species(sp):
+            if hasattr(sp, "oxi_state") and sp.oxi_state is not None:
+                return Species(sp.symbol, sp.oxi_state)
+            return get_el_sp(sp.symbol)
+        
         if write_magmoms and symprec is not None:
             warnings.warn(
                 "Magnetic symmetry cannot currently be detected by pymatgen, disabling symmetry detection.",
@@ -1677,10 +1681,7 @@ class CifWriter:
         if symprec is None:
             for site in struct:
                 for sp, occu in sorted(site.species.items()):
-                    if hasattr(sp, 'oxi_state') and sp.oxi_state is not None:
-                        clean_sp = Species(sp.symbol, sp.oxi_state)
-                    else:
-                        clean_sp = get_el_sp(sp.symbol)
+                    clean_sp = _clean_species(sp)
                     atom_site_type_symbol.append(str(clean_sp))
                     atom_site_symmetry_multiplicity.append("1")
                     atom_site_fract_x.append(format_str.format(site.a))
@@ -1734,10 +1735,7 @@ class CifWriter:
                 ),
             ):
                 for sp, occu in site.species.items():
-                    if hasattr(sp, 'oxi_state') and sp.oxi_state is not None:
-                        clean_sp = Species(sp.symbol, sp.oxi_state)
-                    else:
-                        clean_sp = get_el_sp(sp.symbol)
+                    clean_sp = _clean_species(sp)
                     atom_site_type_symbol.append(str(clean_sp))
                     atom_site_symmetry_multiplicity.append(f"{mult}")
                     atom_site_fract_x.append(format_str.format(site.a))
