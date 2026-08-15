@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from pymatgen.core import IStructure
     from pymatgen.util.typing import MagMomentLike, PathLike
 
-__author__ = "Shyue Ping Ong, Will Richards, Matthew Horton"
+__author__ = "Shyue Ping Ong, Will Richards, Matthew Horton, Lezhe Gao"
 
 
 class CifBlock:
