@@ -1194,3 +1194,32 @@ def test_cif_writer_non_unique_labels(capsys):
     stdout, stderr = capsys.readouterr()
     assert stdout == ""
     assert stderr == ""
+
+def test_write_spin_species(self):
+    """Test that a Species with spin and oxidation state writes correctly."""
+    from pymatgen.core import Species, Lattice, Structure
+    from pymatgen.io.cif import CifWriter
+
+    lattice = Lattice.cubic(3.0)
+    species = Species("Fe", oxidation_state=3, spin=5.0)
+    struct = Structure(lattice, [species], [[0, 0, 0]])
+    writer = CifWriter(struct, write_magmoms=True)
+    cif_str = str(writer)
+    # Check oxidation state appears in type symbol
+    self.assertIn("Fe3+", cif_str)
+    # Check magmom loop is present
+    self.assertIn("_atom_site_moment_crystalaxis_x", cif_str)
+
+def test_write_dummy_species(self):
+    """Test that a DummySpecies writes without conversion error."""
+    from pymatgen.core import DummySpecies, Lattice, Structure
+    from pymatgen.io.cif import CifWriter
+
+    lattice = Lattice.cubic(3.0)
+    species = DummySpecies("X")
+    struct = Structure(lattice, [species], [[0, 0, 0]])
+    writer = CifWriter(struct)
+    cif_str = str(writer)
+    # Should contain the dummy symbol
+    self.assertIn("X", cif_str)
+    # No exception raised during write
