@@ -1562,6 +1562,15 @@ def str2float(text: str) -> float:
         raise
     raise ValueError(f"{text!s} cannot be converted to float")
 
+def _clean_species(sp):
+    """Return a cleaned species (preserve oxidation state if any) for CIF writing."""
+    if isinstance(sp, DummySpecies):
+        # DummySpecies can be used as-is; avoid converting to Species
+        return sp
+    if hasattr(sp, "oxi_state") and sp.oxi_state is not None:
+        return Species(sp.symbol, sp.oxi_state)
+    return get_el_sp(sp.symbol)
+
 
 class CifWriter:
     """A wrapper around CifFile to write CIF files from pymatgen Structure."""
@@ -1595,11 +1604,6 @@ class CifWriter:
             write_site_properties (bool): Whether to write the Structure.site_properties
                 to the CIF as _atom_site_{property name}. Defaults to False.
         """
-        def _clean_species(sp):
-            if hasattr(sp, "oxi_state") and sp.oxi_state is not None:
-                return Species(sp.symbol, sp.oxi_state)
-            return get_el_sp(sp.symbol)
-        
         if write_magmoms and symprec is not None:
             warnings.warn(
                 "Magnetic symmetry cannot currently be detected by pymatgen, disabling symmetry detection.",
@@ -1722,7 +1726,7 @@ class CifWriter:
                     min(sites, key=lambda site: tuple(abs(x) for x in site.frac_coords)),
                     len(sites),
                 )
-                for sites in spg_analyzer.get_symmetrized_structure().equivalent_sites  # type: ignore[reportPossiblyUnboundVariable]
+                for sites in spg_analyzer.get_symmetrized_structure().equivalent_sites
             ]
             for site, mult in sorted(
                 unique_sites,
