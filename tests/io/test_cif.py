@@ -1018,7 +1018,7 @@ Si1 Si 0 0 0 1 0.0
         assert "Fe  Fe0  1  0.21872822  0.75000000  0.47486711  1  1.0" in cif_str
         assert "O  O23  1  0.95662769  0.25000000  0.29286233  1  -1.0" in cif_str
 
-        def test_write_spin_species(self):
+    def test_write_spin_species(self):
         """Test that a Species with spin and oxidation state writes correctly."""
         lattice = Lattice.cubic(3.0)
         species = Species("Fe", oxidation_state=3, spin=5.0)
