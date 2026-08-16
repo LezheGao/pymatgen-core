@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from pymatgen.core import IStructure
     from pymatgen.util.typing import MagMomentLike, PathLike
 
-__author__ = "Shyue Ping Ong, Will Richards, Matthew Horton, Lezhe Gao"
+__author__ = "Shyue Ping Ong, Will Richards, Matthew Horton"
 
 
 class CifBlock:
@@ -1562,7 +1562,8 @@ def str2float(text: str) -> float:
         raise
     raise ValueError(f"{text!s} cannot be converted to float")
 
-def _clean_species(sp):
+
+def _clean_species(sp: Element | Species | DummySpecies) -> Element | Species | DummySpecies:
     """Return a cleaned species (preserve oxidation state if any) for CIF writing."""
     if isinstance(sp, DummySpecies):
         # DummySpecies can be used as-is; avoid converting to Species
@@ -1726,7 +1727,7 @@ class CifWriter:
                     min(sites, key=lambda site: tuple(abs(x) for x in site.frac_coords)),
                     len(sites),
                 )
-                for sites in spg_analyzer.get_symmetrized_structure().equivalent_sites
+                for sites in spg_analyzer.get_symmetrized_structure().equivalent_sites # type: ignore[reportPossiblyUnboundVariable]
             ]
             for site, mult in sorted(
                 unique_sites,
