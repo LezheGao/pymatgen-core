@@ -1,6 +1,10 @@
 
 # Changelog
 
+## v2026.8.16
+
+- Fix `CifWriter` handling of `DummySpecies` to prevent conversion errors and add type hints to `_clean_species`. The `test_write_dummy_species` test now verifies the actual `_atom_site_type_symbol` value rather than just checking for the dummy symbol in the output string. This ensures proper CIF writing for structures containing dummy atoms. (fixes materialsproject/pymatgen#3065; resubmit of materialsproject/pymatgen#3071))
+
 ## v2026.7.31
 
 - New `MatPESRelaxSet` in `pymatgen.io.vasp.sets`: same settings as `MatPESStaticSet` but performs a full relaxation of ionic positions and cell (`ISIF=3`, `IBRION=2`, `NSW=99`) with a force-based convergence criterion (`EDIFFG=-0.02`), so DFT calculations can be performed to match MatPES MLIPs. (by @shyuep)
