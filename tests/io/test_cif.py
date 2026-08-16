@@ -1037,9 +1037,10 @@ Si1 Si 0 0 0 1 0.0
         struct = Structure(lattice, [species], [[0, 0, 0]])
         writer = CifWriter(struct)
         cif_str = str(writer)
-        # Should contain the dummy symbol
-        assert "X" in cif_str
-        # No exception raised during write
+        # Parse the CIF block to verify the atom_site_type_symbol correctly
+        block = CifBlock.from_str(cif_str)
+        assert block.data["_atom_site_type_symbol"] == ["X"]
+        # No exception raised during write is already handled by the test
 
 
 class TestMagCif(MatSciTest):
