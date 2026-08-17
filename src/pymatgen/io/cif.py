@@ -1563,11 +1563,16 @@ def str2float(text: str) -> float:
     raise ValueError(f"{text!s} cannot be converted to float")
 
 
-def _clean_species(sp: Element | Species | DummySpecies) -> Element | Species | DummySpecies:
-    """Return a cleaned species (preserve oxidation state if any) for CIF writing."""
-    if isinstance(sp, DummySpecies):
-        # DummySpecies can be used as-is; avoid converting to Species
+def _clean_species(sp: Element | Species | DummySpecies) -> Element | Species | DummySpecies | str:
+    """Return a cleaned species for CIF writing.
+    - For Element, return as is.
+    - For Species with oxidation state, return Species(symbol, oxi_state) (stripping spin).
+    - For DummySpecies, return its symbol string (no oxidation state).
+    """
+    if isinstance(sp, Element):
         return sp
+    if isinstance(sp, DummySpecies):
+        return sp.symbol
     if hasattr(sp, "oxi_state") and sp.oxi_state is not None:
         return Species(sp.symbol, sp.oxi_state)
     return get_el_sp(sp.symbol)
@@ -1727,7 +1732,7 @@ class CifWriter:
                     min(sites, key=lambda site: tuple(abs(x) for x in site.frac_coords)),
                     len(sites),
                 )
-                for sites in spg_analyzer.get_symmetrized_structure().equivalent_sites # type: ignore[reportPossiblyUnboundVariable]
+                for sites in spg_analyzer.get_symmetrized_structure().equivalent_sites  # type: ignore[reportPossiblyUnboundVariable]
             ]
             for site, mult in sorted(
                 unique_sites,
