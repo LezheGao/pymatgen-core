@@ -1563,19 +1563,9 @@ def str2float(text: str) -> float:
     raise ValueError(f"{text!s} cannot be converted to float")
 
 
-def _clean_species(sp: Element | Species | DummySpecies) -> Element | Species | DummySpecies:
-    """Return a cleaned species (preserve oxidation state if any) for CIF writing."""
-    if isinstance(sp, Element):
-        return sp
-    if isinstance(sp, DummySpecies):
-        # DummySpecies default oxi_state = 0, strip it for plain output "X"
-        if sp.oxi_state == 0:
-            return DummySpecies(sp.symbol, oxidation_state=None)
-        return sp
-    # Now sp is Species (Element and DummySpecies handled)
-    if sp.oxi_state is not None:
-        return Species(sp.symbol, sp.oxi_state)
-    return Element(sp.symbol)
+def _clean_species(sp: Element | Species | DummySpecies) -> str:
+    """Return a cleaned species string for CIF writing, stripping spin and converting X0+ to X."""
+    return str(sp).partition(",spin=")[0].replace("X0+", "X")
 
 
 class CifWriter:
@@ -1691,8 +1681,7 @@ class CifWriter:
         if symprec is None:
             for site in struct:
                 for sp, occu in sorted(site.species.items()):
-                    clean_sp = _clean_species(sp)
-                    atom_site_type_symbol.append(str(clean_sp))
+                    atom_site_type_symbol.append(_clean_species(sp))
                     atom_site_symmetry_multiplicity.append("1")
                     atom_site_fract_x.append(format_str.format(site.a))
                     atom_site_fract_y.append(format_str.format(site.b))
@@ -1745,8 +1734,7 @@ class CifWriter:
                 ),
             ):
                 for sp, occu in site.species.items():
-                    clean_sp = _clean_species(sp)
-                    atom_site_type_symbol.append(str(clean_sp))
+                    atom_site_type_symbol.append(_clean_species(sp))
                     atom_site_symmetry_multiplicity.append(f"{mult}")
                     atom_site_fract_x.append(format_str.format(site.a))
                     atom_site_fract_y.append(format_str.format(site.b))
