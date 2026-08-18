@@ -1568,9 +1568,11 @@ def _clean_species(sp: Element | Species | DummySpecies) -> Element | Species | 
     if isinstance(sp, Element):
         return sp
     if isinstance(sp, DummySpecies):
-        # DummySpecies("X") defaults to oxi_state=0; strip it for plain output "X"
-        return DummySpecies(sp.symbol) if not sp.oxi_state else sp
-    # sp is now Species
+        # DummySpecies default oxi_state = 0, strip it for plain output "X"
+        if sp.oxi_state == 0:
+            return DummySpecies(sp.symbol, oxidation_state=None)
+        return sp
+    # Now sp is Species (Element and DummySpecies handled)
     if sp.oxi_state is not None:
         return Species(sp.symbol, sp.oxi_state)
     return Element(sp.symbol)
