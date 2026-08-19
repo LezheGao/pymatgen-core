@@ -1025,9 +1025,9 @@ Si1 Si 0 0 0 1 0.0
         struct = Structure(lattice, [species], [[0, 0, 0]])
         writer = CifWriter(struct, write_magmoms=True)
         cif_str = str(writer)
-        # Check oxidation state appears in type symbol
-        assert "Fe3+" in cif_str
-        # Check magmom loop is present
+        # Parse and verify the CIF block
+        block = CifBlock.from_str(cif_str)
+        assert block.data["_atom_site_type_symbol"] == ["Fe3+"]
         assert "_atom_site_moment_crystalaxis_x" in cif_str
 
     def test_write_dummy_species(self):
@@ -1037,10 +1037,8 @@ Si1 Si 0 0 0 1 0.0
         struct = Structure(lattice, [species], [[0, 0, 0]])
         writer = CifWriter(struct)
         cif_str = str(writer)
-        # Parse the CIF block to verify the atom_site_type_symbol correctly
         block = CifBlock.from_str(cif_str)
         assert block.data["_atom_site_type_symbol"] == ["X"]
-        # No exception raised during write is already handled by the test
 
 
 class TestMagCif(MatSciTest):
