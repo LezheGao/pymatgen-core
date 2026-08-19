@@ -1564,9 +1564,14 @@ def str2float(text: str) -> float:
 
 
 def _clean_species(sp: Element | Species | DummySpecies) -> str:
-    """Return a cleaned species string for CIF writing, stripping spin and converting X0+ to X."""
-    return str(sp).partition(",spin=")[0].replace("X0+", "X")
-
+    """Return a cleaned species string for CIF writing, stripping spin and formatting oxidation state."""
+    if isinstance(sp, Element):
+        return sp.symbol
+    sym = sp.symbol
+    oxi = getattr(sp, "oxi_state", 0)
+    if oxi == 0:
+        return sym
+    return f"{sym}{oxi:+d}"
 
 class CifWriter:
     """A wrapper around CifFile to write CIF files from pymatgen Structure."""
@@ -1658,8 +1663,13 @@ class CifWriter:
         ]
 
         try:
-            symbol_to_oxi_num = {str(el): float(el.oxi_state or 0) for el in sorted(comp.elements)}
-            blocks["_atom_type_symbol"] = list(symbol_to_oxi_num)
+            cleaned_symbols = [_clean_species(el) for el in sorted(comp.elements)]
+            symbol_to_oxi_num = {
+                sym: float(getattr(el, "oxi_state", 0))
+                for el, sym in zip(sorted(comp.elements), cleaned_symbols)
+            }
+            blocks["_atom_type_symbol"] = list(symbol_to_oxi_num.keys())
+            blocks["_atom_type_oxidation_number"] = list(symbol_to_oxi_num.values())
             blocks["_atom_type_oxidation_number"] = symbol_to_oxi_num.values()
             loops.append(["_atom_type_symbol", "_atom_type_oxidation_number"])
         except (TypeError, AttributeError):
