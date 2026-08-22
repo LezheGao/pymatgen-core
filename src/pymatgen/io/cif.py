@@ -1569,9 +1569,11 @@ def _clean_species(sp: Element | Species | DummySpecies) -> str:
         return sp.symbol
     sym = sp.symbol
     oxi = getattr(sp, "oxi_state", 0)
-    if oxi == 0:
+    if oxi is None or oxi == 0:
         return sym
-    return f"{sym}{oxi:+d}"
+    sign = '+' if oxi > 0 else '-'
+    return f"{sym}{abs(oxi):g}{sign}"
+
 
 class CifWriter:
     """A wrapper around CifFile to write CIF files from pymatgen Structure."""
@@ -1670,7 +1672,6 @@ class CifWriter:
             }
             blocks["_atom_type_symbol"] = list(symbol_to_oxi_num.keys())
             blocks["_atom_type_oxidation_number"] = list(symbol_to_oxi_num.values())
-            blocks["_atom_type_oxidation_number"] = symbol_to_oxi_num.values()
             loops.append(["_atom_type_symbol", "_atom_type_oxidation_number"])
         except (TypeError, AttributeError):
             symbol_to_oxi_num = {el.symbol: 0 for el in sorted(comp.elements)}
