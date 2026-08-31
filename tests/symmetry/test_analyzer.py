@@ -91,6 +91,19 @@ class TestSpacegroupAnalyzer(MatSciTest):
         assert self.sg.get_point_group_symbol() == "mmm"
         assert self.disordered_sg.get_point_group_symbol() == "4/mmm"
 
+    def test_get_pointgroup_unaligned_supercell(self):
+        # point group determination is basis-independent, consistent with the space group type, including
+        # for supercells whose basis vectors are not aligned with the conventional cell axes
+        # (where some point operations are not expressible as integer matrices in the cell basis) --
+        # previously a failure case, when point-group determination was based on spglib rotations dataset
+        diamond = Structure.from_spacegroup("Fd-3m", Lattice.cubic(3.5597), ["C"], [[0, 0, 0]])
+        for sc_matrix in (3, [[2, 2, -1], [-1, 2, 2], [2, -1, 2]]):  # aligned & rotated 3a0 cubes
+            struct = diamond.copy()
+            struct.make_supercell(sc_matrix)
+            sga = SpacegroupAnalyzer(struct, symprec=0.01)
+            assert sga.get_space_group_symbol() == "Fd-3m"
+            assert sga.get_point_group_symbol() == "m-3m"
+
     def test_get_pearson_symbol(self):
         assert self.sg.get_pearson_symbol() == "oP24"
         assert self.disordered_sg.get_pearson_symbol() == "tP58"
@@ -850,6 +863,54 @@ class TestPointGroupAnalyzer(MatSciTest):
         mol = Molecule.from_file(f"{TEST_DIR}/b12h12.xyz")
         pg_analyzer = PointGroupAnalyzer(mol)
         assert pg_analyzer.sch_symbol == "Ih"
+
+    def test_symmetric_top_without_rotation_about_the_unique_axis(self):
+        """A single C2 perpendicular to the unique axis is C2, not D2."""
+        mol = Molecule(
+            ["N", "C", "C", "N", "C", "C"] + ["H"] * 12,
+            [
+                [0.659378, 0.426967, 0.335225],
+                [1.239101, -0.891619, 0.590775],
+                [1.460417, 1.194080, -0.618856],
+                [-0.737346, 0.421402, -0.090549],
+                [-1.098486, -0.638411, -1.032051],
+                [-1.608821, 0.420712, 1.084581],
+                [0.637371, -1.460287, 1.307856],
+                [2.231617, -0.780150, 1.042295],
+                [1.355172, -1.489249, -0.320334],
+                [1.513941, 0.714989, -1.602943],
+                [1.049973, 2.202327, -0.748199],
+                [2.482813, 1.318290, -0.244521],
+                [-2.116346, -0.474199, -1.404049],
+                [-1.067877, -1.636694, -0.581223],
+                [-0.445143, -0.631385, -1.911122],
+                [-1.533093, -0.506981, 1.662903],
+                [-1.368190, 1.260437, 1.746930],
+                [-2.654480, 0.549769, 0.783280],
+            ],
+        )
+        pg_analyzer = PointGroupAnalyzer(mol, tolerance=0.1)
+        assert pg_analyzer.sch_symbol == "C2"
+        assert len(pg_analyzer.get_symmetry_operations()) == 2
+        assert len(pg_analyzer.get_pointgroup()) == 2
+        assert all(order > 1 for _axis, order in pg_analyzer.rot_sym)
+
+    def test_accidental_spherical_top_without_rotation_symmetry(self):
+        """An isotropic inertia tensor with no rotational symmetry is C1, not an error."""
+        mol = Molecule(
+            ["H", "C", "N", "O", "F"],
+            [
+                [0.421312, -4.714984, 0.857910],
+                [-0.791788, -0.926881, -0.452260],
+                [-2.060115, -0.316787, -1.286876],
+                [-0.024651, 0.414342, -0.853569],
+                [-0.386488, -0.858129, -2.322082],
+            ],
+        )
+        pg_analyzer = PointGroupAnalyzer(mol)
+        assert pg_analyzer.eigvals.max() - pg_analyzer.eigvals.min() < 0.01
+        assert pg_analyzer.sch_symbol == "C1"
+        assert pg_analyzer.rot_sym == []
 
     def test_symmetrize_molecule1(self):
         distortion = np.random.default_rng(0).standard_normal((len(C2H4), 3)) / 10
