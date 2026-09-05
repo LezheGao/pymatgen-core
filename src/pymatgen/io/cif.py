@@ -1564,15 +1564,14 @@ def str2float(text: str) -> float:
 
 
 def _clean_species(sp: Element | Species | DummySpecies) -> str:
-    """Return a cleaned species string for CIF writing, stripping spin and formatting oxidation state."""
-    if isinstance(sp, Element):
+    """Returns a cleaned species string for CIF writing, stripping spin and formatting oxidation state.
+    
+    Keeps all explicit oxidation states except 0 for `DummySpecies`.
+    """
+    oxi = getattr(sp, "oxi_state", None)
+    if oxi is None or (oxi == 0 and isinstance(sp, DummySpecies)):
         return sp.symbol
-    sym = sp.symbol
-    oxi = getattr(sp, "oxi_state", 0)
-    if oxi is None or oxi == 0:
-        return sym
-    sign = '+' if oxi > 0 else '-'
-    return f"{sym}{abs(oxi):g}{sign}"
+    return sp.to_pretty_string()
 
 
 class CifWriter:
