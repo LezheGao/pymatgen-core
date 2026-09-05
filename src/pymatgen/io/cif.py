@@ -1665,10 +1665,9 @@ class CifWriter:
         ]
 
         try:
-            cleaned_symbols = [_clean_species(el) for el in sorted(comp.elements)]
             symbol_to_oxi_num = {
-                sym: float(getattr(el, "oxi_state", 0))
-                for el, sym in zip(sorted(comp.elements), cleaned_symbols)
+                _clean_species(el): getattr(el, "oxi_state", 0.0) or 0.0
+                for el in sorted(comp.elements)
             }
             blocks["_atom_type_symbol"] = list(symbol_to_oxi_num.keys())
             blocks["_atom_type_oxidation_number"] = list(symbol_to_oxi_num.values())
