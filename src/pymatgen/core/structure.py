@@ -36,7 +36,7 @@ from typing import (
 import numpy as np
 import orjson
 from monty.dev import deprecated
-from monty.json import MSONable
+from monty.json import MontyDecoder, MSONable
 from tabulate import tabulate
 
 # scipy.cluster.hierarchy, scipy.linalg, and scipy.spatial are imported
@@ -152,7 +152,10 @@ class Neighbor(Site):
         Returns:
             Neighbor
         """
-        return cast("Site", super(Site, cls).from_dict(dct))
+        decoded = {key: MontyDecoder().process_decoded(val) for key, val in dct.items() if not key.startswith("@")}
+        decoded["species"] = Composition(decoded["species"])
+        decoded["coords"] = np.asarray(decoded["coords"])
+        return cls(**decoded)
 
 
 class PeriodicNeighbor(PeriodicSite):
@@ -2214,6 +2217,7 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         include_index: bool = False,
         include_image: bool = False,
         include_site: bool = True,
+        numerical_tol: float = 1e-8,
     ):
         """Get neighbors for each atom in the unit cell, out to a distance r.
         Use this method if you are planning on looping over all sites in the
@@ -2239,6 +2243,11 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                 in the returned data
             include_site (bool): Whether to include the site in the returned
                 data. Defaults to True.
+            numerical_tol (float): This is a numerical tolerance for distances.
+                Sites which are < numerical_tol are determined to be coincident
+                with the site. Sites which are r + numerical_tol away is deemed
+                to be within r from the site. The default of 1e-8 should be
+                ok in most instances.
 
         Returns:
             list[list[PeriodicNeighbor]]: Neighbors for each site in structure.
@@ -2263,7 +2272,7 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         for image in itertools.product(*all_ranges):
             coords = np.dot(image, matrix) + coords_in_cell
             all_dists = all_distances(coords, site_coords)
-            all_within_r = np.bitwise_and(all_dists <= r, all_dists > 1e-8)
+            all_within_r = np.bitwise_and(all_dists <= r + numerical_tol, all_dists > numerical_tol)
 
             for j, d, within_r in zip(indices, all_dists, all_within_r, strict=True):
                 if include_site:
@@ -4337,17 +4346,17 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
 
         return self
 
-    def remove_sites(self, indices: Sequence[SupportsIndex | None]) -> Self:
-        """Delete sites with at indices.
+    def remove_sites(self, indices: Iterable[SupportsIndex | None]) -> Self:
+        """Remove sites at the given indices.
 
         Args:
-            indices: Sequence of indices of sites to delete.
+            indices: Iterable of indices. Ignores None and negative values.
 
         Returns:
-            Structure: self with sites removed.
+            Structure: self with relevant sites removed.
         """
-        self.sites = [site for idx, site in enumerate(self) if idx not in indices]
-
+        remove = {v.__index__() for v in indices if v is not None}
+        self._sites = [site for idx, site in enumerate(self._sites) if idx not in remove]
         return self
 
     def apply_operation(self, symm_op: SymmOp, fractional: bool = False) -> Self:
@@ -4818,7 +4827,7 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
                     "Fm-3m",
                     Lattice.cubic(kwargs["a"]),
                     species,
-                    [[0, 0, 0], [0.5, 0.5, 0]],
+                    [[0, 0, 0], [0.5, 0.5, 0.5]],
                 )
             if prototype == "perovskite":
                 return cls.from_spacegroup(

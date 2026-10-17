@@ -340,7 +340,7 @@ class GrainBoundaryGenerator:
                 For fcc and bcc, using conventional cell can lead to a non-primitive
                 grain boundary structure.
                 This code supplies Cubic, Tetragonal, Orthorhombic, Rhombohedral, and
-                Hexagonal systems.
+                Hexagonal systems; triclinic and monoclinic structures raise a ValueError.
             symprec (float): Tolerance for symmetry finding. Defaults to 0.1 (the value used
                 in Materials Project), which is for structures with slight deviations
                 from their proper atomic positions (e.g., structures relaxed with
@@ -351,20 +351,19 @@ class GrainBoundaryGenerator:
             angle_tolerance (float): Angle tolerance for symmetry finding.
         """
         analyzer = SpacegroupAnalyzer(initial_structure, symprec, angle_tolerance)
-        self.lat_type = analyzer.get_lattice_type()[0]
+        lattice_type = analyzer.get_lattice_type()
+        # Map explicitly rather than taking the first letter, which would read "triclinic" as tetragonal ("t").
+        lat_types = {"cubic": "c", "tetragonal": "t", "orthorhombic": "o", "hexagonal": "h", "rhombohedral": "r"}
+        if lattice_type not in lat_types:
+            raise ValueError(
+                f"GrainBoundaryGenerator supports cubic, tetragonal, orthorhombic, hexagonal and rhombohedral "
+                f"lattices, but the structure is {lattice_type}."
+            )
+        self.lat_type = lat_types[lattice_type]
 
-        # Use the conventional cell for tetragonal
+        # Use the conventional cell for tetragonal, which always has the unique axis as c
         if self.lat_type == "t":
             initial_structure = analyzer.get_conventional_standard_structure()
-            a, b, c = initial_structure.lattice.abc
-            # c axis of tetragonal structure not in the third direction
-            if abs(a - b) > symprec:
-                # a == c, rotate b to the third direction
-                if abs(a - c) < symprec:
-                    initial_structure.make_supercell([[0, 0, 1], [1, 0, 0], [0, 1, 0]])
-                # b == c, rotate a to the third direction
-                else:
-                    initial_structure.make_supercell([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
 
         elif self.lat_type == "h":
             alpha, beta, gamma = initial_structure.lattice.angles
@@ -638,12 +637,10 @@ class GrainBoundaryGenerator:
                         mu, mv = ratio
                     lam = mv
 
-                elif lat_type == "o" and ratio is not None:
-                    new_ratio = [1 if v is None else v for v in ratio]
-                    mu, lam, mv = new_ratio
-
                 else:
-                    raise RuntimeError("Invalid lattice type.")
+                    # Orthorhombic. ratio=None was already rejected at the top of this method.
+                    new_ratio = [1 if v is None else v for v in cast("list[int | None]", ratio)]
+                    mu, lam, mv = new_ratio
 
                 trans_cry1 = np.array([[1, 0, 0], [0, np.sqrt(lam / mv), 0], [0, 0, np.sqrt(mu / mv)]])
 
@@ -1260,11 +1257,14 @@ class GrainBoundaryGenerator:
             r_matrix = (np.array(r_list) / com_fac / sigma).reshape(3, 3)
 
         if sigma > 1000:
-            raise RuntimeError("Sigma >1000 too large. Are you sure what you are doing, Please check the GB if exist")
+            raise RuntimeError(
+                f"Sigma {round(sigma)} > 1000 for a rotation of {angle} degrees about {list(r_axis)}. If this is not "
+                "the intended grain boundary, the rotation angle is probably not precise enough: a rounded angle "
+                "gives a spurious, very large sigma. Use the exact angle from get_rotation_angle_from_sigma or the "
+                "enum_sigma_* methods."
+            )
         # Transform surface, r_axis, r_matrix in terms of primitive lattice
         surface = np.matmul(surface, np.transpose(trans_cry))
-        if surface is None:
-            raise ValueError("surface is None.")
         fractions = [Fraction(x).limit_denominator() for x in surface]
         least_mul = reduce(math.lcm, [fraction.denominator for fraction in fractions])
         surface = cast("tuple[int, int, int]", tuple(round(x * least_mul) for x in surface))
@@ -1369,13 +1369,8 @@ class GrainBoundaryGenerator:
 
         # Count the number of odds in r_axis
         odd_r = len(list(filter(lambda x: x % 2 == 1, r_axis)))
-        # Compute the max n we need to enumerate
-        if odd_r == 3:
-            a_max = 4
-        elif odd_r == 0:
-            a_max = 1
-        else:
-            a_max = 2
+        # Compute the max n we need to enumerate. r_axis is coprime, so at least one component is odd.
+        a_max = 4 if odd_r == 3 else 2
         n_max = int(np.sqrt(cutoff * a_max / sum(np.array(r_axis) ** 2)))
         # Enumerate all possible n, m to give possible sigmas within the cutoff
         sigmas: dict[int, list[float]] = {}
@@ -2027,8 +2022,6 @@ class GrainBoundaryGenerator:
 
         elif lat_type == "t":
             logger.info("Make sure this is for tetragonal system")
-            if ratio is None:
-                logger.info("Make sure this is for irrational c2/a2 ratio")
             sigma_dict = GrainBoundaryGenerator.enum_sigma_tet(
                 cutoff=sigma,
                 r_axis=cast("tuple[int, int, int]", r_axis),
@@ -2045,16 +2038,12 @@ class GrainBoundaryGenerator:
 
         elif lat_type == "h":
             logger.info("Make sure this is for hexagonal system")
-            if ratio is None:
-                logger.info("Make sure this is for irrational c2/a2 ratio")
             sigma_dict = GrainBoundaryGenerator.enum_sigma_hex(
                 cutoff=sigma, r_axis=r_axis, c2_a2_ratio=cast("tuple[int, int]", ratio)
             )
 
         elif lat_type == "r":
             logger.info("Make sure this is for rhombohedral system")
-            if ratio is None:
-                logger.info("Make sure this is for irrational (1+2*cos(alpha)/cos(alpha) ratio")
             sigma_dict = GrainBoundaryGenerator.enum_sigma_rho(
                 cutoff=sigma,
                 r_axis=cast("tuple[int, int, int]", r_axis),
@@ -2072,8 +2061,8 @@ class GrainBoundaryGenerator:
         else:
             sigmas.sort()
             warnings.warn(
-                "This is not the possible sigma value according to the rotation axis!"
-                "The nearest neighbor sigma and its corresponding angle are returned",
+                f"Sigma {sigma} is not possible for rotation axis {list(r_axis)}. Returning the rotation angles of "
+                f"sigma {sigmas[-1]}, the largest possible sigma below it (possible values: {sigmas}).",
                 stacklevel=2,
             )
             rotation_angles = sigma_dict[sigmas[-1]]
