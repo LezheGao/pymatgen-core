@@ -122,16 +122,18 @@ class TestGruneisenParameterDebyeTempShim:
 
 @pytest.mark.skipif(TotalDos is None, reason="Phonopy not present")
 class TestGruneisenParameter(MatSciTest):
-    def setup_method(self) -> None:
-        self.gruneisen_obj = get_gruneisenparameter(
+    # Parsing the mesh yaml files is slow, so load once per class. Tests must not mutate these objects.
+    @classmethod
+    def setup_class(cls) -> None:
+        cls.gruneisen_obj = get_gruneisenparameter(
             f"{TEST_DIR}/gruneisen_mesh_InP.yaml",
             structure_path=f"{TEST_DIR}/eq/POSCAR_InP",
         )
-        self.gruneisen_obj_small = get_gruneisenparameter(
+        cls.gruneisen_obj_small = get_gruneisenparameter(
             f"{TEST_DIR}/gruneisen_mesh_only_one_q_InP.yaml",
             structure_path=f"{TEST_DIR}/eq/POSCAR_InP",
         )
-        self.gruneisen_obj_Si = get_gruneisenparameter(
+        cls.gruneisen_obj_Si = get_gruneisenparameter(
             f"{TEST_DIR}/gruneisen_mesh_Si.yaml",
             structure_path=f"{TEST_DIR}/eq/POSCAR_Si",
         )

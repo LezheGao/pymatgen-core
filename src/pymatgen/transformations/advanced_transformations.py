@@ -8,7 +8,7 @@ import warnings
 from fractions import Fraction
 from itertools import groupby, product
 from string import ascii_lowercase
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -17,7 +17,7 @@ from monty.json import MSONable
 
 from pymatgen.command_line.enumlib_caller import EnumError, EnumlibAdaptor
 from pymatgen.command_line.mcsqs_caller import run_mcsqs
-from pymatgen.core import DummySpecies, Element, Species, Structure, get_el_sp
+from pymatgen.core import DummySpecies, Element, Lattice, Species, Structure, get_el_sp
 from pymatgen.core.adsorption import AdsorbateSiteFinder
 from pymatgen.core.bond_valence import BVAnalyzer
 from pymatgen.core.energy_models import SymmetryModel
@@ -1128,7 +1128,10 @@ class DopingTransformation(AbstractTransformation):
                     }
                 )
 
-            structs = trafo.apply_transformation(supercell, return_ranked_list=self.max_structures_per_enum)
+            # with return_ranked_list set, apply_transformation returns a list of dicts
+            structs = cast(
+                "list[dict]", trafo.apply_transformation(supercell, return_ranked_list=self.max_structures_per_enum)
+            )
             logger.info(f"{len(structs)} distinct structures")
             all_structures.extend(structs)
         logger.info(f"Total {len(all_structures)} doped structures")
@@ -1542,16 +1545,12 @@ class CubicSupercellTransformation(AbstractTransformation):
             target_sc_size = self.min_length
             while sc_not_found:
                 target_sc_lat_vecs = np.eye(3, 3) * target_sc_size
-                length_vecs, n_atoms, superstructure, self.transformation_matrix = self.get_possible_supercell(
-                    lat_vecs, structure, target_sc_lat_vecs
+                length_vecs, n_atoms, sc_lattice, self.transformation_matrix = self._get_possible_supercell_lattice(
+                    lat_vecs, len(structure), target_sc_lat_vecs
                 )
                 # Check if constraints are satisfied
-                if self.check_constraints(
-                    length_vecs=length_vecs,
-                    n_atoms=n_atoms,
-                    superstructure=superstructure,
-                ):
-                    return superstructure
+                if self._check_constraints(length_vecs, n_atoms, sc_lattice):
+                    return SupercellTransformation(self.transformation_matrix).apply_transformation(structure)
 
                 # Increase threshold until proposed supercell meets requirements
                 target_sc_size += self.step_size
@@ -1563,22 +1562,21 @@ class CubicSupercellTransformation(AbstractTransformation):
             # prevent a too long search for the supercell
             self.step_size *= 5
 
-        combined_list = [
-            [size_a, size_b, size_c]
-            for size_a in np.arange(self.min_length, self.max_length, self.step_size)
-            for size_b in np.arange(self.min_length, self.max_length, self.step_size)
-            for size_c in np.arange(self.min_length, self.max_length, self.step_size)
+        sizes = np.arange(self.min_length, self.max_length, self.step_size)
+        combined_list = np.stack(np.meshgrid(sizes, sizes, sizes, indexing="ij"), axis=-1).reshape(-1, 3)
+        # stable sort by (a + b) + c, matching sorted(..., key=sum) on the lexicographic product
+        combined_list = combined_list[
+            np.argsort(combined_list[:, 0] + combined_list[:, 1] + combined_list[:, 2], kind="stable")
         ]
-        combined_list = sorted(combined_list, key=sum)
 
         for size_a, size_b, size_c in combined_list:
             target_sc_lat_vecs = np.array([[size_a, 0, 0], [0, size_b, 0], [0, 0, size_c]])
-            length_vecs, n_atoms, superstructure, self.transformation_matrix = self.get_possible_supercell(
-                lat_vecs, structure, target_sc_lat_vecs
+            length_vecs, n_atoms, sc_lattice, self.transformation_matrix = self._get_possible_supercell_lattice(
+                lat_vecs, len(structure), target_sc_lat_vecs
             )
             # Check if constraints are satisfied
-            if self.check_constraints(length_vecs=length_vecs, n_atoms=n_atoms, superstructure=superstructure):
-                return superstructure
+            if self._check_constraints(length_vecs, n_atoms, sc_lattice):
+                return SupercellTransformation(self.transformation_matrix).apply_transformation(structure)
 
             self.check_exceptions(length_vecs, n_atoms)
         raise AttributeError("Unable to find orthorhombic supercell")
@@ -1602,15 +1600,16 @@ class CubicSupercellTransformation(AbstractTransformation):
             bool
 
         """
+        return self._check_constraints(length_vecs, n_atoms, superstructure.lattice)
+
+    def _check_constraints(self, length_vecs, n_atoms, lattice: Lattice) -> bool:
+        """Same as check_constraints, but only needs the supercell lattice."""
         return bool(
             (
                 np.min(np.linalg.norm(length_vecs, axis=1)) >= self.min_length
                 and self.min_atoms <= n_atoms <= self.max_atoms
             )
-            and (
-                not self.force_90_degrees
-                or np.all(np.absolute(np.array(superstructure.lattice.angles) - 90) < self.angle_tolerance)
-            )
+            and (not self.force_90_degrees or np.all(np.absolute(np.array(lattice.angles) - 90) < self.angle_tolerance))
         )
 
     @staticmethod
@@ -1620,6 +1619,25 @@ class CubicSupercellTransformation(AbstractTransformation):
 
         Returns:
             length_vecs, n_atoms, superstructure, transformation_matrix
+        """
+        length_vecs, _, _, transformation_matrix = CubicSupercellTransformation._get_possible_supercell_lattice(
+            lat_vecs, len(structure), target_sc_lat_vecs
+        )
+        # Get number of atoms
+        st = SupercellTransformation(transformation_matrix)
+        superstructure = st.apply_transformation(structure)
+        n_atoms = len(superstructure)
+        return length_vecs, n_atoms, superstructure, transformation_matrix
+
+    @staticmethod
+    def _get_possible_supercell_lattice(lat_vecs, n_sites: int, target_sc_lat_vecs):
+        """Like get_possible_supercell, but without building the supercell Structure.
+
+        The supercell atom count is n_sites * |det(T)| and its lattice is T @ lat_vecs, which is
+        all the constraint checks need. Avoids constructing a full Structure per trial matrix.
+
+        Returns:
+            length_vecs, n_atoms, supercell lattice, transformation_matrix
         """
         transformation_matrix = target_sc_lat_vecs @ np.linalg.inv(lat_vecs)
         # round the entries of T and force T to be non-singular
@@ -1647,11 +1665,8 @@ class CubicSupercellTransformation(AbstractTransformation):
                 length6_vec,
             ]
         )
-        # Get number of atoms
-        st = SupercellTransformation(transformation_matrix)
-        superstructure = st.apply_transformation(structure)
-        n_atoms = len(superstructure)
-        return length_vecs, n_atoms, superstructure, transformation_matrix
+        n_atoms = n_sites * round(abs(np.linalg.det(transformation_matrix)))
+        return length_vecs, n_atoms, Lattice(proposed_sc_lat_vecs), transformation_matrix
 
 
 class AddAdsorbateTransformation(AbstractTransformation):

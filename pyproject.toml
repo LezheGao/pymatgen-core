@@ -229,7 +229,7 @@ docstring-code-format = true
 "dev_scripts/*" = ["D"]
 
 [tool.pytest.ini_options]
-addopts = "-n auto --durations=30 --quiet -r xXs --color=yes --import-mode=importlib"
+addopts = "-n auto --dist worksteal --durations=30 --quiet -r xXs --color=yes --import-mode=importlib"
 filterwarnings = [
     # NOTE: the LAST matching option would be used
     "ignore::UserWarning",
@@ -296,7 +296,7 @@ test = [
     "pymongo>=4.10",
     "pytest>=8.3.5",
     "pytest-cov>=6.0.0",
-    "pytest-xdist>=3.0.0"
+    "pytest-xdist>=3.2.0"
 ]
 lint = [
     "mypy>=1.15.0",

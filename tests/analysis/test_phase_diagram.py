@@ -1505,7 +1505,10 @@ class TestPhaseDiagramEdgeCases:
             assert self.pd.get_decomp_and_e_above_hull(PDEntry("U", 0), on_error="warn") == (None, None)
 
     def test_get_equilibrium_reaction_energy_unstable_raises(self):
-        unstable = next(e for e in self.pd.unstable_entries if not e.is_element)
+        # Pick the most unstable entry deterministically. unstable_entries is a set whose iteration order
+        # depends on PYTHONHASHSEED, and some entries (e.g. LiO, Li2O) sit ~1e-5 eV/atom above the hull,
+        # close enough that Entry.__eq__ (np.allclose) treats them as equal to the stable polymorph.
+        unstable = max((e for e in self.pd.unstable_entries if not e.is_element), key=self.pd.get_e_above_hull)
         with pytest.raises(ValueError, match="is unstable, the equilibrium reaction energy is available only"):
             self.pd.get_equilibrium_reaction_energy(unstable)
 

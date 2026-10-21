@@ -601,22 +601,24 @@ class CifParser:
             for final_key, interim_key in changes_to_make.items():
                 data.data[final_key] = data.data[interim_key]
 
-        # Check for finite precision coordinates (e.g. 0.6667 instead of 0.6666666...),
+        # Check for finite precision coordinates close to fractional thirds (e. g. 0.667),
         # which can cause issues when applying symmetry operations.
-        important_fracs = (1 / 3, 2 / 3)
-        fracs_to_change = {}
+        fracs_to_change: dict[tuple[str, int], str] = {}
         for label in ("_atom_site_fract_x", "_atom_site_fract_y", "_atom_site_fract_z"):
-            if label in data.data:
-                for idx, frac in enumerate(data.data[label]):
-                    try:
-                        frac = str2float(frac)
-                    except Exception:
-                        # Coordinate might not be defined, e.g. '?'
-                        continue
+            if label not in data.data:
+                continue
+            for idx, value in enumerate(data.data[label]):
+                try:
+                    frac = str2float(value)
+                except ValueError:
+                    # Coordinate might not be defined, e.g. '?'
+                    continue
 
-                    for comparison_frac in important_fracs:
-                        if math.isclose(frac / comparison_frac, 1, abs_tol=self._frac_tolerance, rel_tol=0):
-                            fracs_to_change[label, idx] = str(comparison_frac)
+                thirds_index = round(3 * frac)
+                if thirds_index % 3:
+                    closest_third = thirds_index / 3
+                    if math.isclose(frac, closest_third, abs_tol=self._frac_tolerance, rel_tol=0):
+                        fracs_to_change[label, idx] = str(closest_third)
 
         if fracs_to_change:
             self.warnings.append(
@@ -1545,20 +1547,23 @@ class CifParser:
         return failure_reason
 
 
-def str2float(text: str) -> float:
+def str2float(text: str | list[str]) -> float:
     """Remove uncertainty brackets from strings and return the float."""
     try:
         # Note that the ending ) is sometimes missing. That is why the code has
         # been modified to treat it as optional. Same logic applies to lists.
-        return float(re.sub(r"\(.+\)*", "", text))
+        return float(re.sub(r"\(.+\)*", "", cast("str", text)))
 
     except TypeError:
         if isinstance(text, list) and len(text) == 1:
-            return float(re.sub(r"\(.+\)*", "", text[0]))
+            try:
+                return float(re.sub(r"\(.+\)*", "", text[0]))
+            except TypeError:
+                pass
 
     except ValueError:
         if text.strip() == ".":
-            return 0
+            return 0.0
         raise
     raise ValueError(f"{text!s} cannot be converted to float")
 
@@ -1617,15 +1622,20 @@ class CifWriter:
         spacegroup: tuple[str, int] = ("P 1", 1)
         if symprec is not None:
             spg_analyzer = SpacegroupAnalyzer(struct, symprec, angle_tolerance=angle_tolerance)
-            spacegroup = (
-                spg_analyzer.get_space_group_symbol(),
-                spg_analyzer.get_space_group_number(),
-            )
 
             if refine_struct:
                 # Need the refined structure when using symprec. This converts
                 # primitive to conventional structures, the standard for CIF.
                 struct = spg_analyzer.get_refined_structure()
+                # Symmetrizing can raise the symmetry found at the same tolerance, so re-analyze
+                # the refined structure. The space group, symmetry operations and asymmetric unit
+                # written below then all describe the structure that is actually written.
+                spg_analyzer = SpacegroupAnalyzer(struct, symprec, angle_tolerance=angle_tolerance)
+
+            spacegroup = (
+                spg_analyzer.get_space_group_symbol(),
+                spg_analyzer.get_space_group_number(),
+            )
 
         lattice = struct.lattice
         comp = struct.composition
@@ -1649,9 +1659,8 @@ class CifWriter:
             blocks["_symmetry_equiv_pos_as_xyz"] = ["x, y, z"]
 
         else:
-            spg_analyzer = SpacegroupAnalyzer(struct, symprec)
             symm_ops: list[SymmOp] = []
-            for op in spg_analyzer.get_symmetry_operations():
+            for op in spg_analyzer.get_symmetry_operations():  # type: ignore[reportPossiblyUnboundVariable]
                 v = op.translation_vector
                 symm_ops.append(SymmOp.from_rotation_and_translation(op.rotation_matrix, v))
 

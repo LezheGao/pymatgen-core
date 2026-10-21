@@ -11,6 +11,7 @@ from pymatgen.core import Composition, DummySpecies, Element, Lattice, Species, 
 from pymatgen.core.structure_matcher import StructureMatcher
 from pymatgen.electronic_structure.core import Magmom
 from pymatgen.io.cif import CifBlock, CifParser, CifWriter
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.symmetry.structure import SymmetrizedStructure
 from pymatgen.util.testing import TEST_FILES_DIR, VASP_IN_DIR, MatSciTest
 
@@ -250,7 +251,10 @@ class TestCifIO(MatSciTest):
         assert set(sym_structure.labels) == {"O1", "Li1"}
 
     def test_no_sym_ops(self):
-        with open(f"{TEST_FILES_DIR}/cif/Li2O.cif") as fin, open("test.cif", "w") as fout:
+        with (
+            open(f"{TEST_FILES_DIR}/cif/Li2O.cif", encoding="utf-8") as fin,
+            open("test.cif", "w", encoding="utf-8") as fout,
+        ):
             for line_num, line in enumerate(fin, start=1):
                 # Skip "_symmetry_equiv_pos_as_xyz", "_symmetry_space_group_name_H-M"
                 # and "_symmetry_Int_Tables_number" sections such that
@@ -541,6 +545,20 @@ loop_
         writer = CifWriter(struct, symprec=0.1, angle_tolerance=2)
         dct = next(iter(writer.cif_file.data.values()))
         assert dct["_symmetry_Int_Tables_number"] == 62
+
+    def test_symmetry_matches_refined_structure(self, monkeypatch):
+        # Refining can raise the symmetry found at the same symprec (issue #193). The space group
+        # symbol and number must describe the refined structure that is written, as the symmetry
+        # operations do. Stand in for such a refinement with a fixed higher-symmetry result.
+        struct = Structure(Lattice.orthorhombic(3, 4, 5), ["Na"], [[0, 0, 0]])
+        refined = Structure(Lattice.cubic(3), ["Na"], [[0, 0, 0]])
+        monkeypatch.setattr(SpacegroupAnalyzer, "get_refined_structure", lambda *_args, **_kwargs: refined.copy())
+
+        writer = CifWriter(struct, symprec=0.01)
+        dct = next(iter(writer.cif_file.data.values()))
+        assert dct["_symmetry_Int_Tables_number"] == 221
+        assert dct["_symmetry_space_group_name_H-M"] == "Pm-3m"
+        assert len(dct["_symmetry_equiv_pos_as_xyz"]) == 48
 
     def test_disordered(self):
         si = Element("Si")
@@ -1039,6 +1057,20 @@ Si1 Si 0 0 0 1 0.0
         cif_str = str(writer)
         block = CifBlock.from_str(cif_str)
         assert block.data["_atom_site_type_symbol"] == ["X"]
+    def test_cif_thirds(self):
+        """Test cif sanitization idealizing sites at 1/3 and 2/3 with PBC."""
+        # Initialize 21 hydrogen sites at [0, 1/3, 2/3] + PBC
+        thirds = np.linspace(-10, 10 + 2 / 3, 63, dtype=np.float64).reshape((21, 3))
+        elements = [Composition({Element("H"): 1 / 21})] * 21
+
+        thirds_struct = Structure(Lattice.cubic(1), elements, thirds)
+
+        # Generate a cif with all sites
+        file = CifWriter(thirds_struct, significant_figures=4, refine_struct=False).cif_file
+
+        # Read the cif: Correct: All sites merge via PBC. Incorrect: Two sites (one at 0.333, one at 1/3).
+        parsed = CifParser.from_str(str(file), frac_tolerance=0.0001, occupancy_tolerance=1 + 1e-10).parse_structures()
+        assert np.allclose(parsed[0].frac_coords, np.array([[0, 1 / 3, 2 / 3]]))
 
 
 class TestMagCif(MatSciTest):
